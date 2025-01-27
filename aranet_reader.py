@@ -143,12 +143,49 @@ async def find_aranet4():
     
     return None
 
+async def pair_device(device):
+    """Pair with Aranet4 device using PIN code."""
+    try:
+        print("Initiating pairing with device...")
+        import subprocess
+        
+        # First initiate the pairing request
+        pair_cmd = f'echo -e "pair {device.address}\\n" | bluetoothctl'
+        subprocess.run(pair_cmd, shell=True, check=True)
+        
+        # Wait a moment for the device to show the PIN
+        await asyncio.sleep(2)
+        
+        print("\nA PIN should now be displayed on your Aranet4 device.")
+        print("Enter the PIN shown on the device:")
+        pin = input().strip()
+        
+        if not pin:
+            raise Exception("PIN cannot be empty")
+        
+        # Confirm the pairing with the PIN
+        confirm_cmd = f'echo -e "{pin}\\nyes\\n" | bluetoothctl'
+        subprocess.run(confirm_cmd, shell=True, check=True)
+        
+        # Wait for pairing to complete
+        await asyncio.sleep(2)
+        
+        # Trust the device for future connections
+        trust_cmd = f'echo -e "trust {device.address}\\n" | bluetoothctl'
+        subprocess.run(trust_cmd, shell=True, check=True)
+        
+        print("Device paired successfully!")
+        return True
+    except Exception as e:
+        print(f"Failed to pair device: {str(e)}")
+        return False
+
 async def read_sensor():
     """Read data from the Aranet4 sensor."""
     max_retries = 3
     retry_delay = 5
-    connect_delay = 2  # Delay after connection before reading
-    disconnect_retry = 3  # Number of disconnect attempts
+    connect_delay = 2
+    disconnect_retry = 3
     
     for attempt in range(max_retries):
         device = None
@@ -159,6 +196,13 @@ async def read_sensor():
                 raise Exception("No Aranet4 device found!")
             
             try:
+                # Attempt to pair if needed
+                if os.getenv('ARANET_NEEDS_PAIRING', 'false').lower() == 'true':
+                    if not await pair_device(device):
+                        raise Exception("Failed to pair with device")
+                    # Set the flag to false after successful pairing
+                    os.environ['ARANET_NEEDS_PAIRING'] = 'false'
+                
                 client = BleakClient(
                     device, 
                     timeout=20.0,
