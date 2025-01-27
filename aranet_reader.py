@@ -159,7 +159,11 @@ async def read_sensor():
                 raise Exception("No Aranet4 device found!")
             
             try:
-                client = BleakClient(device, timeout=20.0)
+                client = BleakClient(
+                    device, 
+                    timeout=20.0,
+                    disconnected_callback=lambda c: print("Device disconnected!")
+                )
                 
                 # Try to connect multiple times if needed
                 connect_attempts = 3
@@ -177,13 +181,14 @@ async def read_sensor():
                 # Add delay after connection
                 await asyncio.sleep(connect_delay)
                 
-                # Discover services
+                # Use the services property instead of get_services()
                 print("Discovering services...")
-                services = await client.get_services()
+                if not client.is_connected:
+                    raise Exception("Lost connection before service discovery")
                 
                 # Find our service
                 aranet_service = None
-                for service in services:
+                for service in client.services:
                     if service.uuid == ARANET4_SERVICE_UUID:
                         aranet_service = service
                         break
@@ -194,6 +199,10 @@ async def read_sensor():
                 # Get the characteristic
                 for char in aranet_service.characteristics:
                     if char.uuid == ARANET4_CURRENT_READINGS_UUID:
+                        # Verify connection before reading
+                        if not client.is_connected:
+                            raise Exception("Lost connection before reading characteristic")
+                            
                         data = await client.read_gatt_char(char.uuid)
                         readings = parse_current_readings(data)
                         
@@ -231,11 +240,38 @@ async def read_sensor():
             else:
                 raise
 
+async def power_cycle_bluetooth():
+    """Power cycle the Bluetooth adapter."""
+    try:
+        print("Power cycling Bluetooth adapter...")
+        import subprocess
+        
+        # Stop bluetooth service
+        subprocess.run(['sudo', 'systemctl', 'stop', 'bluetooth'], check=True)
+        await asyncio.sleep(2)
+        
+        # Power cycle the adapter
+        subprocess.run(['sudo', 'rfkill', 'block', 'bluetooth'], check=True)
+        await asyncio.sleep(2)
+        subprocess.run(['sudo', 'rfkill', 'unblock', 'bluetooth'], check=True)
+        await asyncio.sleep(2)
+        
+        # Start bluetooth service
+        subprocess.run(['sudo', 'systemctl', 'start', 'bluetooth'], check=True)
+        await asyncio.sleep(5)  # Give more time for service to fully start
+        
+        print("Bluetooth power cycle complete")
+        return True
+    except Exception as e:
+        print(f"Failed to power cycle Bluetooth: {str(e)}")
+        return False
+
+# Update the reset_bluetooth function to use power cycle as a last resort
 async def reset_bluetooth():
     """Reset the Bluetooth adapter."""
     try:
         print("Resetting Bluetooth adapter...")
-        # Use subprocess to reset bluetooth
+        # First try soft reset
         import subprocess
         subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], check=True)
         await asyncio.sleep(2)
@@ -244,8 +280,9 @@ async def reset_bluetooth():
         print("Bluetooth adapter reset complete")
         return True
     except Exception as e:
-        print(f"Failed to reset Bluetooth: {str(e)}")
-        return False
+        print(f"Soft reset failed: {str(e)}")
+        print("Attempting power cycle...")
+        return await power_cycle_bluetooth()
 
 async def main_loop():
     """Main program loop."""
