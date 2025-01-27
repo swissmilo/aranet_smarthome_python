@@ -150,8 +150,8 @@ async def pair_device(device):
         import subprocess
         
         # First initiate the pairing request
-        pair_cmd = f'echo -e "pair {device.address}\\n" | bluetoothctl'
-        subprocess.run(pair_cmd, shell=True, check=True)
+        pair_cmd = ['bluetoothctl', 'pair', device.address]
+        subprocess.Popen(pair_cmd)
         
         # Wait a moment for the device to show the PIN
         await asyncio.sleep(2)
@@ -163,16 +163,31 @@ async def pair_device(device):
         if not pin:
             raise Exception("PIN cannot be empty")
         
-        # Confirm the pairing with the PIN
-        confirm_cmd = f'echo -e "{pin}\\nyes\\n" | bluetoothctl'
-        subprocess.run(confirm_cmd, shell=True, check=True)
+        # Send the PIN
+        agent_cmd = ['bluetoothctl', 'agent', 'DisplayYesNo']
+        subprocess.run(agent_cmd, check=True)
+        
+        # Use expect-like behavior to handle PIN entry
+        confirm_cmd = ['bluetoothctl']
+        process = subprocess.Popen(
+            confirm_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Send PIN and confirmation
+        process.stdin.write(f"{pin}\n")
+        process.stdin.write("yes\n")
+        process.stdin.flush()
         
         # Wait for pairing to complete
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
         
-        # Trust the device for future connections
-        trust_cmd = f'echo -e "trust {device.address}\\n" | bluetoothctl'
-        subprocess.run(trust_cmd, shell=True, check=True)
+        # Trust the device
+        trust_cmd = ['bluetoothctl', 'trust', device.address]
+        subprocess.run(trust_cmd, check=True)
         
         print("Device paired successfully!")
         return True
