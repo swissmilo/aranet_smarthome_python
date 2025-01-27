@@ -148,6 +148,7 @@ async def read_sensor():
     max_retries = 3
     retry_delay = 5
     connect_delay = 2  # Delay after connection before reading
+    disconnect_retry = 3  # Number of disconnect attempts
     
     for attempt in range(max_retries):
         device = None
@@ -158,31 +159,69 @@ async def read_sensor():
                 raise Exception("No Aranet4 device found!")
             
             try:
-                client = BleakClient(device, timeout=20.0)  # Increased timeout
-                await client.connect()
-                print(f"Connected to {device.name}")
+                client = BleakClient(device, timeout=20.0)
+                
+                # Try to connect multiple times if needed
+                connect_attempts = 3
+                for connect_try in range(connect_attempts):
+                    try:
+                        await client.connect()
+                        print(f"Connected to {device.name}")
+                        break
+                    except Exception as connect_error:
+                        if connect_try == connect_attempts - 1:
+                            raise
+                        print(f"Connection attempt {connect_try + 1} failed: {str(connect_error)}")
+                        await asyncio.sleep(2)
                 
                 # Add delay after connection
                 await asyncio.sleep(connect_delay)
                 
-                data = await client.read_gatt_char(ARANET4_CURRENT_READINGS_UUID)
-                readings = parse_current_readings(data)
+                # Discover services
+                print("Discovering services...")
+                services = await client.get_services()
                 
-                # Print readings
-                current_time = datetime.now().strftime("%I:%M:%S %p")
-                print(f"\n[{current_time}] Readings:")
-                print(f"CO2: {readings['co2']} ppm")
-                print(f"Temperature: {readings['temperature']:.1f}°C")
-                print(f"Humidity: {readings['humidity']}%")
-                print(f"Pressure: {readings['pressure']:.1f} hPa")
+                # Find our service
+                aranet_service = None
+                for service in services:
+                    if service.uuid == ARANET4_SERVICE_UUID:
+                        aranet_service = service
+                        break
                 
-                return readings
+                if not aranet_service:
+                    raise Exception("Aranet4 service not found")
+                
+                # Get the characteristic
+                for char in aranet_service.characteristics:
+                    if char.uuid == ARANET4_CURRENT_READINGS_UUID:
+                        data = await client.read_gatt_char(char.uuid)
+                        readings = parse_current_readings(data)
+                        
+                        # Print readings
+                        current_time = datetime.now().strftime("%I:%M:%S %p")
+                        print(f"\n[{current_time}] Readings:")
+                        print(f"CO2: {readings['co2']} ppm")
+                        print(f"Temperature: {readings['temperature']:.1f}°C")
+                        print(f"Humidity: {readings['humidity']}%")
+                        print(f"Pressure: {readings['pressure']:.1f} hPa")
+                        
+                        return readings
+                
+                raise Exception("Reading characteristic not found")
                 
             finally:
-                if client and client.is_connected:
-                    await client.disconnect()
-                    print("Disconnected from device")
-                    await asyncio.sleep(1)  # Brief delay after disconnection
+                if client:
+                    # Try multiple times to disconnect cleanly
+                    for _ in range(disconnect_retry):
+                        try:
+                            if client.is_connected:
+                                await client.disconnect()
+                                print("Disconnected from device")
+                                await asyncio.sleep(1)
+                            break
+                        except Exception as disconnect_error:
+                            print(f"Disconnect attempt failed: {str(disconnect_error)}")
+                            await asyncio.sleep(1)
                     
         except Exception as e:
             if attempt < max_retries - 1:
@@ -192,8 +231,27 @@ async def read_sensor():
             else:
                 raise
 
+async def reset_bluetooth():
+    """Reset the Bluetooth adapter."""
+    try:
+        print("Resetting Bluetooth adapter...")
+        # Use subprocess to reset bluetooth
+        import subprocess
+        subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], check=True)
+        await asyncio.sleep(2)
+        subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True)
+        await asyncio.sleep(3)
+        print("Bluetooth adapter reset complete")
+        return True
+    except Exception as e:
+        print(f"Failed to reset Bluetooth: {str(e)}")
+        return False
+
 async def main_loop():
     """Main program loop."""
+    consecutive_failures = 0
+    max_failures_before_reset = 3
+
     if os.getenv('TEST_EMAIL') == 'true':
         await send_error_email(Exception("Test email"))
         return
@@ -205,16 +263,26 @@ async def main_loop():
             success = await post_to_server(readings)
             
             if success:
+                consecutive_failures = 0  # Reset failure counter
                 print(f"\nWaiting {CONFIG['POLLING_INTERVAL']} seconds until next reading...")
                 await asyncio.sleep(CONFIG['POLLING_INTERVAL'])
             else:
+                consecutive_failures += 1
                 await send_error_email(Exception("Failed to post readings to server"))
-                await asyncio.sleep(30)  # Wait 30 seconds before retry
+                await asyncio.sleep(30)
                 
         except Exception as e:
+            consecutive_failures += 1
             print(f'Error during reading: {str(e)}')
+            
+            if consecutive_failures >= max_failures_before_reset:
+                print("Too many consecutive failures, attempting Bluetooth reset...")
+                if await reset_bluetooth():
+                    consecutive_failures = 0
+                await asyncio.sleep(5)
+            
             await send_error_email(e)
-            await asyncio.sleep(30)  # Wait 30 seconds before retry
+            await asyncio.sleep(30)
 
 def signal_handler(sig, frame):
     """Handle cleanup on program exit."""
