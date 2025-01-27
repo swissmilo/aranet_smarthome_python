@@ -13,14 +13,35 @@ from sendgrid.helpers.mail import Mail
 # Load environment variables
 load_dotenv()
 
-# Configuration
-CONFIG = {
+# Configuration with validation
+required_configs = {
     'API_ENDPOINT': os.getenv('API_ENDPOINT'),
     'API_KEY': os.getenv('API_KEY'),
     'DEVICE_ID': os.getenv('DEVICE_ID'),
     'TARGET_DEVICE': os.getenv('TARGET_DEVICE'),
-    'POLLING_INTERVAL': 1800,  # 30 minutes in seconds
+    'POLLING_INTERVAL': int(os.getenv('POLLING_INTERVAL', 1800)),  # Default to 1800 if not set
 }
+
+# Validate required configurations
+missing_configs = [key for key, value in required_configs.items() 
+                  if value is None or (key != 'POLLING_INTERVAL' and not value)]
+if missing_configs:
+    print("Error: Missing required configuration values:")
+    for config in missing_configs:
+        print(f"- {config}")
+    print("\nPlease set these variables in your .env file")
+    sys.exit(1)
+
+try:
+    # Ensure POLLING_INTERVAL is a valid positive integer
+    if required_configs['POLLING_INTERVAL'] <= 0:
+        print("Error: POLLING_INTERVAL must be a positive number")
+        sys.exit(1)
+except (ValueError, TypeError):
+    print("Error: POLLING_INTERVAL must be a valid number")
+    sys.exit(1)
+
+CONFIG = required_configs
 
 # Aranet4 specific UUIDs
 ARANET4_SERVICE_UUID = "f0cd1400-95da-4f4b-9ac8-aa55d312af0c"
