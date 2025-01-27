@@ -128,47 +128,69 @@ Please check the device and restart if necessary.
 async def find_aranet4():
     """Scan for Aranet4 devices."""
     print("Scanning for Aranet4 devices...")
-    devices = await BleakScanner.discover()
     
-    for device in devices:
-        if device.name and device.name == CONFIG['TARGET_DEVICE']:
-            print(f"Found target device: {device.name}")
-            return device
-        elif device.name and 'Aranet4' in device.name:
-            print(f"Found other Aranet4 device: {device.name}")
+    # Try multiple scans if needed
+    for _ in range(3):
+        devices = await BleakScanner.discover(timeout=5.0)
+        for device in devices:
+            if device.name and device.name == CONFIG['TARGET_DEVICE']:
+                print(f"Found target device: {device.name}")
+                return device
+            elif device.name and 'Aranet4' in device.name:
+                print(f"Found other Aranet4 device: {device.name}")
+        
+        await asyncio.sleep(1)  # Brief delay between scans
     
     return None
 
 async def read_sensor():
     """Read data from the Aranet4 sensor."""
-    device = await find_aranet4()
-    client = None
+    max_retries = 3
+    retry_delay = 5
+    connect_delay = 2  # Delay after connection before reading
     
-    if not device:
-        raise Exception("No Aranet4 device found!")
-    
-    try:
-        client = BleakClient(device)
-        await client.connect()
-        print(f"Connected to {device.name}")
-        
-        data = await client.read_gatt_char(ARANET4_CURRENT_READINGS_UUID)
-        readings = parse_current_readings(data)
-        
-        # Print readings
-        current_time = datetime.now().strftime("%I:%M:%S %p")
-        print(f"\n[{current_time}] Readings:")
-        print(f"CO2: {readings['co2']} ppm")
-        print(f"Temperature: {readings['temperature']:.1f}°C")
-        print(f"Humidity: {readings['humidity']}%")
-        print(f"Pressure: {readings['pressure']:.1f} hPa")
-        
-        return readings
-        
-    finally:
-        if client and client.is_connected:
-            await client.disconnect()
-            print("Disconnected from device")
+    for attempt in range(max_retries):
+        device = None
+        client = None
+        try:
+            device = await find_aranet4()
+            if not device:
+                raise Exception("No Aranet4 device found!")
+            
+            try:
+                client = BleakClient(device, timeout=20.0)  # Increased timeout
+                await client.connect()
+                print(f"Connected to {device.name}")
+                
+                # Add delay after connection
+                await asyncio.sleep(connect_delay)
+                
+                data = await client.read_gatt_char(ARANET4_CURRENT_READINGS_UUID)
+                readings = parse_current_readings(data)
+                
+                # Print readings
+                current_time = datetime.now().strftime("%I:%M:%S %p")
+                print(f"\n[{current_time}] Readings:")
+                print(f"CO2: {readings['co2']} ppm")
+                print(f"Temperature: {readings['temperature']:.1f}°C")
+                print(f"Humidity: {readings['humidity']}%")
+                print(f"Pressure: {readings['pressure']:.1f} hPa")
+                
+                return readings
+                
+            finally:
+                if client and client.is_connected:
+                    await client.disconnect()
+                    print("Disconnected from device")
+                    await asyncio.sleep(1)  # Brief delay after disconnection
+                    
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Attempt {attempt + 1} failed: {str(e)}")
+                print(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                raise
 
 async def main_loop():
     """Main program loop."""
