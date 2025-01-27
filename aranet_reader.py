@@ -149,12 +149,34 @@ async def pair_device(device):
         print("Initiating pairing with device...")
         import subprocess
         
-        # First initiate the pairing request
-        pair_cmd = ['bluetoothctl', 'pair', device.address]
-        subprocess.Popen(pair_cmd)
-        
-        # Wait a moment for the device to show the PIN
+        # Remove any existing pairing first
+        remove_cmd = ['bluetoothctl', 'remove', device.address]
+        subprocess.run(remove_cmd)
         await asyncio.sleep(2)
+        
+        # Set up agent first
+        agent_cmd = ['bluetoothctl', 'agent', 'KeyboardDisplay']
+        subprocess.run(agent_cmd)
+        default_agent_cmd = ['bluetoothctl', 'default-agent']
+        subprocess.run(default_agent_cmd)
+        
+        # Start pairing process
+        print("Starting pairing process...")
+        pair_process = subprocess.Popen(
+            ['bluetoothctl'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Send pair command
+        pair_process.stdin.write(f"pair {device.address}\n")
+        pair_process.stdin.flush()
+        
+        # Wait for the device to show PIN
+        print("Waiting for PIN to appear on device...")
+        await asyncio.sleep(5)
         
         print("\nA PIN should now be displayed on your Aranet4 device.")
         print("Enter the PIN shown on the device:")
@@ -164,36 +186,33 @@ async def pair_device(device):
             raise Exception("PIN cannot be empty")
         
         # Send the PIN
-        agent_cmd = ['bluetoothctl', 'agent', 'DisplayYesNo']
-        subprocess.run(agent_cmd, check=True)
-        
-        # Use expect-like behavior to handle PIN entry
-        confirm_cmd = ['bluetoothctl']
-        process = subprocess.Popen(
-            confirm_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # Send PIN and confirmation
-        process.stdin.write(f"{pin}\n")
-        process.stdin.write("yes\n")
-        process.stdin.flush()
+        pair_process.stdin.write(f"{pin}\n")
+        pair_process.stdin.flush()
         
         # Wait for pairing to complete
         await asyncio.sleep(5)
         
+        # Check if pairing was successful
+        info_cmd = ['bluetoothctl', 'info', device.address]
+        result = subprocess.run(info_cmd, capture_output=True, text=True)
+        
+        if "Paired: yes" not in result.stdout:
+            raise Exception("Pairing verification failed")
+        
         # Trust the device
         trust_cmd = ['bluetoothctl', 'trust', device.address]
-        subprocess.run(trust_cmd, check=True)
+        subprocess.run(trust_cmd)
         
         print("Device paired successfully!")
         return True
+        
     except Exception as e:
         print(f"Failed to pair device: {str(e)}")
         return False
+    finally:
+        # Clean up bluetoothctl process if it exists
+        if 'pair_process' in locals():
+            pair_process.terminate()
 
 async def read_sensor():
     """Read data from the Aranet4 sensor."""
